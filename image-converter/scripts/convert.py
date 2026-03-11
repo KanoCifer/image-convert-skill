@@ -135,41 +135,87 @@ def resize_image(img: Image.Image, max_size: Optional[int]) -> Image.Image:
 
 def strip_exif_keep_icc(img: Image.Image) -> Image.Image:
     """Strip EXIF data but preserve ICC profile."""
-    # Extract ICC profile if present
     icc_profile = img.info.get("icc_profile")
 
-    # Create new image without EXIF
-    data = list(img.getdata())
-    new_img = Image.new(img.mode, img.size)
-    new_img.putdata(data)
-
-    # Restore ICC profile
     if icc_profile:
-        new_img.info["icc_profile"] = icc_profile
+        import io
 
-    return new_img
+        buffer = io.BytesIO()
+        img.save(buffer, format=img.format or "PNG")
+        buffer.seek(0)
+        new_img = Image.open(buffer)
+        new_img.info["icc_profile"] = icc_profile
+        new_img.load()
+        return new_img
+
+    return img
 
 
 def save_webp(img: Image.Image, path: Path, quality: int, lossless: bool) -> None:
     """Save image as WebP with specified settings."""
-    # Ensure output directory exists
     path.parent.mkdir(parents=True, exist_ok=True)
 
     save_kwargs = {
         "format": "WEBP",
         "quality": quality,
         "lossless": lossless,
-        "method": 4,  # Balanced compression
+        "method": 4,
     }
 
-    # Only add subsampling for lossy (not lossless)
     if not lossless:
-        save_kwargs["subsampling"] = 0  # 4:4:4 for best quality
+        save_kwargs["subsampling"] = 0
 
     try:
         img.save(path, **save_kwargs)
     except Exception as e:
         raise IOError(f"Failed to save WebP to {path}: {e}")
+
+
+def save_with_compression(
+    img: Image.Image, path: Path, quality: int, compress_level: int
+) -> None:
+    """Save image with compression in its original format."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    ext = path.suffix.lower()
+    save_kwargs = {}
+
+    if ext in (".jpg", ".jpeg"):
+        save_kwargs = {
+            "format": "JPEG",
+            "quality": quality,
+            "optimize": True,
+        }
+    elif ext == ".png":
+        save_kwargs = {
+            "format": "PNG",
+            "optimize": True,
+            "compress_level": compress_level,
+        }
+    elif ext == ".gif":
+        save_kwargs = {
+            "format": "GIF",
+            "optimize": True,
+        }
+    elif ext == ".webp":
+        save_kwargs = {
+            "format": "WEBP",
+            "quality": quality,
+            "method": 4,
+        }
+    elif ext in (".tiff", ".tif"):
+        save_kwargs = {
+            "format": "TIFF",
+            "compression": "tiff_deflate",
+            "compress_level": compress_level,
+        }
+    else:
+        save_kwargs = {"format": img.format or "PNG"}
+
+    try:
+        img.save(path, **save_kwargs)
+    except Exception as e:
+        raise IOError(f"Failed to save {path}: {e}")
 
 
 def process_single_file(
@@ -178,23 +224,20 @@ def process_single_file(
     quality: int,
     max_size: Optional[int],
     lossless: bool,
+    compress: bool = False,
+    compress_level: int = 6,
 ) -> bool:
     """Process a single image file."""
     try:
-        # Load image
         img = load_image(input_path)
-
-        # Convert color mode
         img = convert_color_mode(img)
-
-        # Resize if needed
         img = resize_image(img, max_size)
-
-        # Strip EXIF but keep ICC
         img = strip_exif_keep_icc(img)
 
-        # Save as WebP
-        save_webp(img, output_path, quality, lossless)
+        if compress:
+            save_with_compression(img, output_path, quality, compress_level)
+        else:
+            save_webp(img, output_path, quality, lossless)
 
         return True
 
@@ -232,6 +275,8 @@ def process_directory(
     quality: int,
     max_size: Optional[int],
     lossless: bool,
+    compress: bool = False,
+    compress_level: int = 6,
 ) -> Tuple[int, int]:
     """Process all images in a directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -239,7 +284,6 @@ def process_directory(
     success_count = 0
     total_count = 0
 
-    # Find all image files
     for path in input_dir.rglob("*"):
         if not path.is_file():
             continue
@@ -248,14 +292,17 @@ def process_directory(
 
         total_count += 1
 
-        # Calculate relative path and output path
         rel_path = path.relative_to(input_dir)
-        output_path = output_dir / rel_path.with_suffix(".webp")
+        if compress:
+            output_path = output_dir / rel_path
+        else:
+            output_path = output_dir / rel_path.with_suffix(".webp")
 
-        # Create subdirectories if needed
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if process_single_file(path, output_path, quality, max_size, lossless):
+        if process_single_file(
+            path, output_path, quality, max_size, lossless, compress, compress_level
+        ):
             success_count += 1
             print(f"Converted: {path} -> {output_path}")
         else:
@@ -296,6 +343,23 @@ Examples:
         action="store_true",
         help="Use lossless compression (ignores --quality)",
     )
+    parser.add_argument(
+        "--compress",
+        action="store_true",
+        help="Compress in original format (keep format, don't convert to WebP)",
+    )
+    parser.add_argument(
+        "--compress-quality",
+        type=int,
+        default=85,
+        help="Compression quality for --compress mode (1-100, default: 85)",
+    )
+    parser.add_argument(
+        "--compress-level",
+        type=int,
+        default=6,
+        help="Compression level for PNG/TIFF (0-9, default: 6)",
+    )
 
     args = parser.parse_args()
 
@@ -319,15 +383,25 @@ Examples:
 
     # Process based on input type
     output_path = Path(args.output)
+    compress = args.compress
+    compress_level = args.compress_level
+    compress_quality = args.compress_quality
 
     if input_path.is_file():
-        # Single file mode
         if output_path.is_dir():
-            # Output is directory, use input filename with .webp
-            output_path = get_output_path(input_path, output_path)
+            if compress:
+                output_path = output_path / input_path.name
+            else:
+                output_path = get_output_path(input_path, output_path)
 
         success = process_single_file(
-            input_path, output_path, quality, max_size, args.lossless
+            input_path,
+            output_path,
+            quality,
+            max_size,
+            args.lossless,
+            compress,
+            compress_level,
         )
 
         if success:
@@ -337,11 +411,16 @@ Examples:
             sys.exit(1)
 
     elif input_path.is_dir():
-        # Directory mode
         output_path.mkdir(parents=True, exist_ok=True)
 
         success, total = process_directory(
-            input_path, output_path, quality, max_size, args.lossless
+            input_path,
+            output_path,
+            quality,
+            max_size,
+            args.lossless,
+            compress,
+            compress_level,
         )
 
         print(f"\nCompleted: {success}/{total} files converted successfully")

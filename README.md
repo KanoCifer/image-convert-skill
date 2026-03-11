@@ -1,6 +1,6 @@
 # Image Converter Skill
 
-使用 Pillow 将常见图像格式转换为 WebP 格式的 skill。
+使用 Pillow 将常见图像格式转换为 WebP 格式，或进行格式不变的压缩。
 
 ## 功能特性
 
@@ -10,6 +10,7 @@
 - **批量处理**: 支持目录批量转换
 - **色彩转换**: 自动转换 CMYK→RGB，调色板→RGBA
 - **元数据**: 清除 EXIF，保留 ICC 色彩配置
+- **格式保留压缩**: 保留原格式进行压缩
 
 ## 安装依赖
 
@@ -44,6 +45,25 @@ python image-converter/scripts/convert.py input.png output.webp --lossless
 # 批量处理目录
 python image-converter/scripts/convert.py photos/ webp_photos/
 ```
+
+### 格式保留压缩
+
+保留原格式进行压缩，不转换为 WebP：
+
+```bash
+# 压缩 PNG
+python image-converter/scripts/convert.py input.png output.png --compress
+
+# 压缩 JPEG（质量 75）
+python image-converter/scripts/convert.py input.jpg output.jpg --compress --compress-quality 75
+
+# 批量压缩目录
+python image-converter/scripts/convert.py photos/ compressed/ --compress
+```
+
+压缩参数：
+- `--compress-quality`: 压缩质量 (1-100，默认 85)
+- `--compress-level`: PNG/TIFF 压缩级别 (0-9，默认 6)
 
 ## 项目结构
 
