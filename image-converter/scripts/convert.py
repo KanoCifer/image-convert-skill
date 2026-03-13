@@ -7,7 +7,6 @@ Usage:
 """
 
 import argparse
-import os
 import sys
 from pathlib import Path
 from typing import Optional, Tuple
@@ -51,6 +50,17 @@ def validate_max_size(max_size: Optional[int]) -> Optional[int]:
     return max_size
 
 
+def validate_to_format(to_format: Optional[str]) -> Optional[str]:
+    if not to_format:
+        return None
+    supported = {"jpeg", "jpg", "png", "webp", "gif", "bmp", "tiff", "tif"}
+    if to_format.lower() not in supported:
+        raise ValueError(
+            f"Unsupported format: {to_format}. Supported formats are: {', '.join(sorted(list(supported)))}"
+        )
+    return to_format
+
+
 def get_output_path(
     input_path: Path, output_dir: Path, output_path: Optional[Path] = None
 ) -> Path:
@@ -58,9 +68,7 @@ def get_output_path(
     if output_path:
         return output_path
 
-    # Change extension to .webp
-    stem = input_path.stem
-    return output_dir / f"{stem}.webp"
+    return output_dir / input_path.stem
 
 
 def load_image(path: Path) -> Image.Image:
@@ -218,14 +226,179 @@ def save_with_compression(
         raise IOError(f"Failed to save {path}: {e}")
 
 
+def save_image_format(
+    img: Image.Image,
+    path: Path,
+    target_format: Optional[str] = None,
+    quality: int = 90,
+    lossless: bool = False,
+    compress_level: int = 6,
+) -> None:
+    """Save image in a specific format with appropriate settings."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not target_format:
+        ext = path.suffix.lower()
+        if ext in (".jpg", ".jpeg"):
+            target_format = "JPEG"
+        elif ext == ".png":
+            target_format = "PNG"
+        elif ext == ".webp":
+            target_format = "WEBP"
+        elif ext == ".gif":
+            target_format = "GIF"
+        elif ext == ".bmp":
+            target_format = "BMP"
+        elif ext in (".tiff", ".tif"):
+            target_format = "TIFF"
+        else:
+            target_format = img.format or "PNG"
+
+    target_format = target_format.upper()
+    save_kwargs: dict = {"format": target_format}
+
+    if target_format == "JPEG":
+        save_kwargs["quality"] = quality
+        save_kwargs["optimize"] = True
+        if img.mode in ("RGBA", "LA") or (
+            img.mode == "P" and "transparency" in img.info
+        ):
+            background = Image.new("RGB", img.size, (255, 255, 255))
+            if img.mode == "P":
+                img = img.convert("RGBA")
+            background.paste(img, mask=img.split()[-1])
+            img = background
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+
+    elif target_format == "PNG":
+        save_kwargs["optimize"] = True
+        save_kwargs["compress_level"] = compress_level
+
+    elif target_format == "WEBP":
+        save_kwargs["quality"] = quality
+        save_kwargs["lossless"] = lossless
+        save_kwargs["method"] = 4
+        if not lossless:
+            save_kwargs["subsampling"] = 0
+
+    elif target_format == "GIF":
+        save_kwargs["optimize"] = True
+
+    elif target_format == "TIFF":
+        save_kwargs["compression"] = "tiff_deflate"
+        save_kwargs["compress_level"] = compress_level
+
+    elif target_format == "BMP":
+        pass
+
+    else:
+        supported_formats = Image.registered_extensions().values()
+        if target_format not in supported_formats and target_format not in Image.SAVE:
+            raise IOError(f"Unsupported output format: {target_format}")
+
+    try:
+        img.save(path, **save_kwargs)
+    except Exception as e:
+        raise IOError(f"Failed to save {target_format} to {path}: {e}")
+
+
+def resolve_target_format(
+    output_path: Path,
+    to_format: Optional[str] = None,
+    compress: bool = False,
+    input_path: Optional[Path] = None,
+) -> Tuple[str, Path]:
+    """
+    Resolve the target image format and adjust the output path.
+
+    Precedence:
+    1. to_format flag
+    2. explicit output_path extension
+    3. legacy defaults (compress format or webp)
+
+    Args:
+        output_path: The intended output path.
+        to_format: Optional target format string (e.g., 'jpeg', 'png').
+        compress: Whether compression mode is enabled.
+        input_path: Optional input path to derive format from in compress mode.
+
+    Returns:
+        A tuple of (target_format_str, actual_output_path).
+    """
+    target_format = None
+    actual_path = output_path
+
+    if to_format:
+        target_format = to_format.upper()
+        if not output_path.is_dir():
+            ext = f".{target_format.lower()}"
+            if target_format == "JPEG":
+                ext = ".jpg"
+            actual_path = output_path.with_suffix(ext)
+
+    elif not output_path.is_dir() and output_path.suffix:
+        ext = output_path.suffix.lower()
+        if ext in (".jpg", ".jpeg"):
+            target_format = "JPEG"
+        elif ext == ".png":
+            target_format = "PNG"
+        elif ext == ".webp":
+            target_format = "WEBP"
+        elif ext == ".gif":
+            target_format = "GIF"
+        elif ext == ".bmp":
+            target_format = "BMP"
+        elif ext in (".tiff", ".tif"):
+            target_format = "TIFF"
+        else:
+            target_format = ext.lstrip(".").upper()
+
+    if not target_format:
+        if compress and input_path:
+            input_ext = input_path.suffix.lower()
+            if input_ext in (".jpg", ".jpeg"):
+                target_format = "JPEG"
+            elif input_ext == ".png":
+                target_format = "PNG"
+            elif input_ext == ".webp":
+                target_format = "WEBP"
+            elif input_ext == ".gif":
+                target_format = "GIF"
+            elif input_ext == ".bmp":
+                target_format = "BMP"
+            elif input_ext in (".tiff", ".tif"):
+                target_format = "TIFF"
+            else:
+                target_format = "PNG"
+
+            if not output_path.is_dir():
+                actual_path = output_path.with_suffix(input_path.suffix)
+        else:
+            target_format = "WEBP"
+            if not output_path.is_dir():
+                actual_path = output_path.with_suffix(".webp")
+
+    if target_format == "JPG":
+        target_format = "JPEG"
+
+    supported_formats = {"JPEG", "PNG", "WEBP", "GIF", "BMP", "TIFF"}
+    if target_format not in supported_formats:
+        raise ValueError(f"Unsupported output format: {target_format}")
+
+    return target_format, actual_path
+
+
 def process_single_file(
     input_path: Path,
     output_path: Path,
     quality: int,
     max_size: Optional[int],
     lossless: bool,
+    to_format: Optional[str] = None,
     compress: bool = False,
     compress_level: int = 6,
+    compress_quality: int = 85,
 ) -> bool:
     """Process a single image file."""
     try:
@@ -234,10 +407,20 @@ def process_single_file(
         img = resize_image(img, max_size)
         img = strip_exif_keep_icc(img)
 
-        if compress:
-            save_with_compression(img, output_path, quality, compress_level)
-        else:
-            save_webp(img, output_path, quality, lossless)
+        target_format, actual_output_path = resolve_target_format(
+            output_path, to_format=to_format, compress=compress, input_path=input_path
+        )
+
+        effective_quality = compress_quality if compress else quality
+
+        save_image_format(
+            img,
+            actual_output_path,
+            target_format=target_format,
+            quality=effective_quality,
+            lossless=lossless,
+            compress_level=compress_level,
+        )
 
         return True
 
@@ -275,8 +458,10 @@ def process_directory(
     quality: int,
     max_size: Optional[int],
     lossless: bool,
+    to_format: Optional[str] = None,
     compress: bool = False,
     compress_level: int = 6,
+    compress_quality: int = 85,
 ) -> Tuple[int, int]:
     """Process all images in a directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -293,15 +478,20 @@ def process_directory(
         total_count += 1
 
         rel_path = path.relative_to(input_dir)
-        if compress:
-            output_path = output_dir / rel_path
-        else:
-            output_path = output_dir / rel_path.with_suffix(".webp")
+        output_path = output_dir / rel_path.parent / rel_path.stem
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         if process_single_file(
-            path, output_path, quality, max_size, lossless, compress, compress_level
+            path,
+            output_path,
+            quality,
+            max_size,
+            lossless,
+            to_format,
+            compress,
+            compress_level,
+            compress_quality,
         ):
             success_count += 1
             print(f"Converted: {path} -> {output_path}")
@@ -314,14 +504,22 @@ def process_directory(
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Convert images to WebP format",
+        description="Convert images between common formats (JPEG, PNG, WebP, GIF, BMP, TIFF)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s input.jpg output.webp
-  %(prog)s input.png output/ --quality 85
-  %(prog)s photos/ webp_photos/ --max-size 1920
-  %(prog)s image.png lossless.webp --lossless
+  Basic conversion:
+    %(prog)s input.png output.jpg
+    %(prog)s input.jpg output_dir/ --to-format webp
+    %(prog)s photos/ webp_photos/ --max-size 1920
+
+  WebP-specific:
+    %(prog)s input.jpg output.webp
+    %(prog)s input.png output/ --quality 85
+    %(prog)s image.png lossless.webp --lossless
+
+  Compression:
+    %(prog)s input.png output.png --compress --compress-quality 75
         """,
     )
 
@@ -331,7 +529,7 @@ Examples:
         "--quality",
         type=int,
         default=90,
-        help="JPEG-like quality for lossy WebP (1-100, default: 90)",
+        help="Quality for lossy formats like JPEG, WebP (1-100, default: 90)",
     )
     parser.add_argument(
         "--max-size",
@@ -352,13 +550,18 @@ Examples:
         "--compress-quality",
         type=int,
         default=85,
-        help="Compression quality for --compress mode (1-100, default: 85)",
+        help="Quality for --compress mode (1-100, default: 85)",
     )
     parser.add_argument(
         "--compress-level",
         type=int,
         default=6,
         help="Compression level for PNG/TIFF (0-9, default: 6)",
+    )
+    parser.add_argument(
+        "--to-format",
+        type=str,
+        help="Explicitly specify target format (jpeg, png, webp, gif, bmp, tiff). Takes precedence over output extension.",
     )
 
     args = parser.parse_args()
@@ -377,6 +580,7 @@ Examples:
         input_path = validate_input_path(args.input)
         quality = validate_quality(args.quality)
         max_size = validate_max_size(args.max_size)
+        to_format = validate_to_format(args.to_format)
     except (FileNotFoundError, ValueError) as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
@@ -389,10 +593,7 @@ Examples:
 
     if input_path.is_file():
         if output_path.is_dir():
-            if compress:
-                output_path = output_path / input_path.name
-            else:
-                output_path = get_output_path(input_path, output_path)
+            output_path = get_output_path(input_path, output_path)
 
         success = process_single_file(
             input_path,
@@ -400,8 +601,10 @@ Examples:
             quality,
             max_size,
             args.lossless,
+            to_format,
             compress,
             compress_level,
+            compress_quality,
         )
 
         if success:
@@ -419,8 +622,10 @@ Examples:
             quality,
             max_size,
             args.lossless,
+            to_format,
             compress,
             compress_level,
+            compress_quality,
         )
 
         print(f"\nCompleted: {success}/{total} files converted successfully")

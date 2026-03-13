@@ -1,10 +1,12 @@
 # Image Converter Skill
 
-使用 Pillow 将常见图像格式转换为 WebP 格式，或进行格式不变的压缩。
+使用 Pillow 在常见图像格式之间进行 mutual conversion（互相转换），或进行格式不变的压缩。
 
 ## 功能特性
 
-- **格式支持**: PNG, JPEG, GIF, BMP, TIFF → WebP
+- **格式支持**: 全面支持常见图像格式 mutual conversion（互相转换）
+  - 输入格式: PNG, JPEG, GIF, BMP, TIFF, WebP
+  - 输出格式: PNG, JPEG, GIF, BMP, TIFF, WebP
 - **质量控制**: 1-100 可配置 (默认 90)
 - **智能缩放**: 保持宽高比的最长边限制
 - **批量处理**: 支持目录批量转换
@@ -27,10 +29,10 @@ uv add Pillow
 
 ## 快速开始
 
-默认质量为 90。
+默认转换为 WebP 格式，质量为 90。
 
 ```bash
-# 转换单个文件
+# 转换单个文件（默认 WebP）
 python image-converter/scripts/convert.py input.jpg output.webp
 
 # 自定义质量
@@ -44,6 +46,44 @@ python image-converter/scripts/convert.py input.png output.webp --lossless
 
 # 批量处理目录
 python image-converter/scripts/convert.py photos/ webp_photos/
+```
+
+### 格式 mutual conversion（互相转换）
+
+根据输出文件扩展名自动确定目标格式：
+
+```bash
+# PNG → JPEG
+python image-converter/scripts/convert.py input.png output.jpg
+
+# JPEG → PNG
+python image-converter/scripts/convert.py input.jpg output.png
+
+# 任意格式 → WebP
+python image-converter/scripts/convert.py input.bmp output.webp
+
+# WebP → PNG
+python image-converter/scripts/convert.py input.webp output.png
+
+# GIF → BMP
+python image-converter/scripts/convert.py input.gif output.bmp
+
+# JPEG → TIFF
+python image-converter/scripts/convert.py input.jpg output.tiff
+```
+
+### 使用 --to-format 显式指定目标格式
+
+```bash
+# 强制输出为 WebP（忽略输出文件扩展名）
+python image-converter/scripts/convert.py input.png output.jpg --to-format webp
+# 输出: output.webp
+
+# 批量转换为 PNG
+python image-converter/scripts/convert.py photos/ png_photos/ --to-format png
+
+# 批量转换为 JPEG
+python image-converter/scripts/convert.py photos/ jpeg_photos/ --to-format jpeg
 ```
 
 ### 格式保留压缩
@@ -64,6 +104,19 @@ python image-converter/scripts/convert.py photos/ compressed/ --compress
 压缩参数：
 - `--compress-quality`: 压缩质量 (1-100，默认 85)
 - `--compress-level`: PNG/TIFF 压缩级别 (0-9，默认 6)
+
+常用参数：
+- `--to-format`: 显式指定目标格式 (jpeg/jpg, png, webp, gif, bmp, tiff/tif)
+
+## 格式转换优先级
+
+目标格式确定的优先级顺序：
+
+1. **`--to-format` 标志**（最高优先级）: 显式指定目标格式
+2. **输出文件扩展名**: 根据输出文件的扩展名确定格式
+3. **默认行为**: 
+   - 普通转换模式: 默认为 WebP
+   - `--compress` 压缩模式: 保留输入格式
 
 ## 项目结构
 
