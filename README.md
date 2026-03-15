@@ -46,6 +46,15 @@ python image-converter/scripts/convert.py input.png output.webp --lossless
 
 # 批量处理目录
 python image-converter/scripts/convert.py photos/ webp_photos/
+
+# 批量处理多个文件（逗号分隔）
+python image-converter/scripts/convert.py "img1.png,img2.jpg,img3.gif" output_dir/ --to-format webp
+
+# 使用通配符批量处理
+python image-converter/scripts/convert.py "*.jpg" output_dir/ --to-format png
+
+# 并行批量处理（4线程）
+python image-converter/scripts/convert.py "*.jpg" output_dir/ --threads 4 -v
 ```
 
 ### 格式 mutual conversion（互相转换）

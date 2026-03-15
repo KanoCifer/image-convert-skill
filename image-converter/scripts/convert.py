@@ -431,7 +431,6 @@ def process_single_file(
 
 def get_supported_extensions() -> set:
     """Get set of supported image extensions."""
-    # Common image formats that can be converted to WebP
     return {
         ".jpg",
         ".jpeg",
@@ -450,6 +449,119 @@ def get_supported_extensions() -> set:
 def is_supported_image(path: Path) -> bool:
     """Check if file is a supported image format."""
     return path.suffix.lower() in get_supported_extensions()
+
+
+def expand_input_patterns(patterns: list) -> list:
+    """Expand glob patterns and file paths into a list of files."""
+    files = []
+    for pattern in patterns:
+        p = Path(pattern)
+        if p.is_file():
+            files.append(p)
+        elif p.is_dir():
+            for path in p.rglob("*"):
+                if path.is_file() and is_supported_image(path):
+                    files.append(path)
+        else:
+            matches = list(Path(".").glob(pattern))
+            for match in matches:
+                if match.is_file() and is_supported_image(match):
+                    files.append(match)
+    return list(set(files))
+
+
+def process_batch_files(
+    input_paths: list,
+    output_base: Path,
+    quality: int,
+    max_size: Optional[int],
+    lossless: bool,
+    to_format: Optional[str] = None,
+    compress: bool = False,
+    compress_level: int = 6,
+    compress_quality: int = 85,
+    workers: int = 1,
+    verbose: bool = False,
+) -> Tuple[int, int, list]:
+    """Process multiple files with optional parallel execution."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    success_count = 0
+    failed_files = []
+    total_count = len(input_paths)
+
+    if workers <= 1:
+        for i, input_path in enumerate(input_paths, 1):
+            if output_base.is_dir():
+                output_path = output_base / f"{input_path.stem}"
+            else:
+                output_path = output_base
+
+            if verbose:
+                print(f"[{i}/{total_count}] Processing: {input_path}")
+
+            if process_single_file(
+                input_path,
+                output_path,
+                quality,
+                max_size,
+                lossless,
+                to_format,
+                compress,
+                compress_level,
+                compress_quality,
+            ):
+                success_count += 1
+                if verbose:
+                    print(f"  -> Success: {output_path}")
+            else:
+                failed_files.append(str(input_path))
+                if verbose:
+                    print(f"  -> Failed")
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {}
+            for input_path in input_paths:
+                if output_base.is_dir():
+                    output_path = output_base / f"{input_path.stem}"
+                else:
+                    output_path = output_base
+
+                future = executor.submit(
+                    process_single_file,
+                    input_path,
+                    output_path,
+                    quality,
+                    max_size,
+                    lossless,
+                    to_format,
+                    compress,
+                    compress_level,
+                    compress_quality,
+                )
+                futures[future] = input_path
+
+            for i, future in enumerate(as_completed(futures), 1):
+                input_path = futures[future]
+                if verbose:
+                    print(f"[{i}/{total_count}] Processing: {input_path}")
+
+                try:
+                    result = future.result()
+                    if result:
+                        success_count += 1
+                        if verbose:
+                            print(f"  -> Success")
+                    else:
+                        failed_files.append(str(input_path))
+                        if verbose:
+                            print(f"  -> Failed")
+                except Exception as e:
+                    failed_files.append(str(input_path))
+                    if verbose:
+                        print(f"  -> Error: {e}")
+
+    return success_count, total_count, failed_files
 
 
 def process_directory(
@@ -513,6 +625,11 @@ Examples:
     %(prog)s input.jpg output_dir/ --to-format webp
     %(prog)s photos/ webp_photos/ --max-size 1920
 
+  Batch processing (multiple files):
+    %(prog)s "*.jpg" output_dir/ --to-format png
+    %(prog)s "img1.png img2.jpg img3.webp" output_dir/ --to-format webp
+    %(prog)s file1.jpg,file2.png,file3.gif output_dir/ --threads 4
+
   WebP-specific:
     %(prog)s input.jpg output.webp
     %(prog)s input.png output/ --quality 85
@@ -523,7 +640,9 @@ Examples:
         """,
     )
 
-    parser.add_argument("input", help="Input file or directory")
+    parser.add_argument(
+        "input", help="Input file, directory, glob pattern, or comma-separated files"
+    )
     parser.add_argument("output", help="Output file or directory")
     parser.add_argument(
         "--quality",
@@ -563,6 +682,18 @@ Examples:
         type=str,
         help="Explicitly specify target format (jpeg, png, webp, gif, bmp, tiff). Takes precedence over output extension.",
     )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=1,
+        help="Number of parallel threads for batch processing (default: 1)",
+    )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Show detailed progress information",
+    )
 
     args = parser.parse_args()
 
@@ -576,20 +707,73 @@ Examples:
         sys.exit(1)
 
     # Validate inputs
-    try:
-        input_path = validate_input_path(args.input)
-        quality = validate_quality(args.quality)
-        max_size = validate_max_size(args.max_size)
-        to_format = validate_to_format(args.to_format)
-    except (FileNotFoundError, ValueError) as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        sys.exit(1)
+    quality = validate_quality(args.quality)
+    max_size = validate_max_size(args.max_size)
+    to_format = validate_to_format(args.to_format)
 
     # Process based on input type
     output_path = Path(args.output)
     compress = args.compress
     compress_level = args.compress_level
     compress_quality = args.compress_quality
+    verbose = args.verbose
+    workers = args.threads
+
+    # Check for batch input (comma-separated or glob pattern)
+    if "," in args.input or "*" in args.input or "?" in args.input:
+        if "," in args.input:
+            input_items = [item.strip() for item in args.input.split(",")]
+        else:
+            input_items = [args.input]
+
+        input_files = expand_input_patterns(input_items)
+
+        if not input_files:
+            print(
+                f"ERROR: No matching files found for pattern: {args.input}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        if output_path.is_file() and len(input_files) > 1:
+            print(
+                f"ERROR: Cannot output multiple files to a single file: {output_path}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        print(f"Processing {len(input_files)} files with {workers} thread(s)...")
+
+        success, total, failed = process_batch_files(
+            input_files,
+            output_path,
+            quality,
+            max_size,
+            args.lossless,
+            to_format,
+            compress,
+            compress_level,
+            compress_quality,
+            workers,
+            verbose,
+        )
+
+        print(f"\nBatch completed: {success}/{total} files converted successfully")
+        if failed:
+            print(f"Failed files: {', '.join(failed)}", file=sys.stderr)
+
+        if success < total:
+            sys.exit(1)
+        sys.exit(0)
+
+    # Single file or directory input
+    try:
+        input_path = validate_input_path(args.input)
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
 
     if input_path.is_file():
         if output_path.is_dir():
